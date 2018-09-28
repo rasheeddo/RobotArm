@@ -5,6 +5,7 @@ from dynamixel_sdk import *                    # Uses Dynamixel SDK library
 import pygame
 import numpy
 import math
+import csv
 
 pygame.init()
 j = pygame.joystick.Joystick(0)
@@ -212,23 +213,7 @@ def RobotArmFWD(deg1,deg2,deg3,deg4,deg5,deg6):
 	return qx, qy, qz, x6_rot, y6_rot, z6_rot
 
 
-
-
 def RobotArmINV(qx,qy,qz,x6_rot,y6_rot,z6_rot):
-
-    if qx < -300:
-        qx = -300
-    if qx > 300:
-        qx = 300
-    if qy < 220:
-        qy = 220
-    if qy > 450:
-        qy = 450
-    if qz < 100:
-        qz = 100
-    if qz > 300:
-        qy = 250
-        qz = 300
 
     rad2deg = 180/math.pi
     deg2rad = math.pi/180
@@ -252,6 +237,7 @@ def RobotArmINV(qx,qy,qz,x6_rot,y6_rot,z6_rot):
 
     a5 = 0
     d5 = 0
+
     alp5 = pi/2
 
     a6 = 0
@@ -519,6 +505,105 @@ def RobotArmINV(qx,qy,qz,x6_rot,y6_rot,z6_rot):
     ServoANG = numpy.array([ServoAng1,ServoAng2,ServoAng3,ServoAng4,ServoAng5,ServoAng6])
 
     return ServoANG
+
+def WorkspaceLimitation(x,y,z):
+
+	rad2deg = 180/math.pi
+	deg2rad = math.pi/180
+	a2 = 216.0
+	a3 = 74.0
+	d4 = 142.0
+	d6 = 200.0
+	R = 560.0
+	r2 = 75.0
+	h = -200.0
+	Qy = (R-d6)*math.cos(150.0*deg2rad)
+	Qz = (R-d6)*math.sin(150.0*deg2rad)
+	Sy = (R-d6-d4)*math.cos(150.0*deg2rad)
+	Sz = (R-d6-d4)*math.sin(150.0*deg2rad)
+
+	if x**2 + y**2 + z**2 <= R**2 and x**2 + y**2 + z**2 > r2**2:
+		if y < 0 and z > 0:
+			if x**2 + (y-Qy)**2 + (z-Qz)**2 > d6**2 and x**2 + (y-Sy)**2 + (z-Sz)**2 > (d6**2 + d4**2):
+				print("Work space is valid, in quadrant2")
+				return x,y,z
+			else:
+				print("ERROR: Out of work range in quadrant 2 or 3")
+				return [None]*3
+		elif y > 0 and z < 0:
+			if z > h:
+				print("Work space is valid, in quadrant4")
+				return x,y,z
+			else:
+				print("ERROR: z is lower than lowest range 'h'")
+				return [None]*3
+		elif y > 0 and z > 0:
+			print("Work space is valid, in quadrant1")
+			return x,y,z
+		else:
+			print("ERROR: y,z point is less than 0")
+			return [None]*3
+
+	else:
+		print("ERROR: x,y,z point is not on the work envelope")
+		return [None]*3
+
+def WorkspaceHorizontalLimitation(x,y,z):
+
+	ymax = 450.0
+	ymin = 230.0
+	zmin_inner = 74.0
+	zmax_inner = 380.0
+	zmin_outer = 0.0
+	zmax_outer = 250.0
+
+	P1 = [ymax,zmin_outer]
+	P2 = [ymax,zmax_outer]
+	P3 = [ymin,zmax_inner]
+	P4 = [ymin,zmin_inner]
+
+	P1y = P1[0]
+	P1z = P1[1]
+	P2y = P2[0]
+	P2z = P2[1]
+	P3y = P3[0]
+	P3z = P3[1]
+	P4y = P4[0]
+	P4z = P4[1]
+
+	m3 = (P4z - P1z)/(P4y - P1y)
+	c3 = P1z - m3*P1y
+	m4 = (P3z - P2z)/(P3y - P2y)
+	c4 = P3z - m4*P3y
+
+	#print("m3: %f" %m3)
+	#print("c3: %f" %c3)
+	#print("m4: %f" %m4)
+	#print("c4: %f" %c4)
+
+
+	if (y >= 0 and z >= 0):
+		if y >= P4y and y <= P1y:
+			Zc = m3*y + c3
+			Z4 = m4*y + c4
+			Rc = Z4 - Zc
+			#print("Zc: %f" %Zc)
+			#print("Z4: %f" %Z4)
+			#print("Rc: %f" %Rc)
+
+			if x**2 + (z-Zc)**2 <= Rc**2:
+				print("Work space is valid")
+				return x,y,z
+			else:
+				print("ERROR: Input is out of XZ plane")
+				return [None]*3
+		else:
+			print("ERROR: Input y is out of range")
+			return [None]*3
+	else:
+		print("ERROR: Input is minus number")
+		return [None]*3
+
 
 def RunServo(inputDeg1,inputDeg2,inputDeg3,inputDeg4,inputDeg5,inputDeg6):
 
@@ -1640,7 +1725,6 @@ def RobotArmAwake():
     return AwakenOK
 
 
-
 ####################################################### Set Servo Configuration #############################################################
 # Control table address
 ADDR_PRO_TORQUE_ENABLE      = 64               # Control table address is different in Dynamixel model
@@ -1796,16 +1880,54 @@ Continue_Btn = Buttons[8] #Logiccool
 GripOpen_Btn = Buttons[9] # Analog Left Push
 GripClose_Btn = Buttons[10] #Analog Right Push
 
+
 ################################################## Kinematics ###################################################
+increment = 0
+MaxLength = 1000000
+samplingTime = 0.1
+TimeIndex = 0
+# If sampling time = 0.1, the data can record for 27.77 hrs
+# If sampling time = 0.01, the data can record for 2.77 hrs
+
+Mem_Ang1 = [None]*MaxLength
+Mem_Ang2 = [None]*MaxLength
+Mem_Ang3 = [None]*MaxLength
+Mem_Ang4 = [None]*MaxLength
+Mem_Ang5 = [None]*MaxLength
+Mem_Ang6 = [None]*MaxLength
+
+Mem_X = [None]*MaxLength
+Mem_Y = [None]*MaxLength
+Mem_Z = [None]*MaxLength
+Mem_XRot = [None]*MaxLength
+Mem_YRot = [None]*MaxLength
+Mem_ZRot = [None]*MaxLength
+
+TimeRecord = [None]*MaxLength
 
 TorqueOff()
 #RobotArmAwake()
 #time.sleep(1)
 #StandByPos()
 #time.sleep(1)
+waitForStart = True
+
+while waitForStart:
+	Buttons = getButton()
+	Start_Btn = Buttons[7] #Start
+
+	if Start_Btn == 1:
+	    waitForStart = False
+	    runTeach = True
 
 
-while True:
+while runTeach:
+
+	Buttons = getButton()
+	Back_Btn = Buttons[6] #Back
+	if Back_Btn == 1:
+		runTeach = False
+		record = True
 
 	ReadAng = ReadAngle()
 	ReadAng1 = ReadAng[0]
@@ -1837,12 +1959,50 @@ while True:
 	X6_ROT = FWD[3]
 	Y6_ROT = FWD[4]
 	Z6_ROT = FWD[5]
-
 	print("X: %f" %X)
 	print("Y: %f" %Y)
 	print("Z: %f" %Z)
+	print(" ")
+
+	XYZ = WorkspaceHorizontalLimitation(X,Y,Z)
+	X = XYZ[0]
+	Y = XYZ[1]
+	Z = XYZ[2]
+
+	print("X: %s" %X)
+	print("Y: %s" %Y)
+	print("Z: %s" %Z)
 	print("X6_ROT: %f" %X6_ROT)
 	print("Y6_ROT: %f" %Y6_ROT)
 	print("Z6_ROT: %f" %Z6_ROT)
 	print("---------------------------")
-	time.sleep(0.5)
+
+	Mem_Ang1[increment] = ReadAng
+	Mem_Ang2[increment] = ReadAng2
+	Mem_Ang3[increment] = ReadAng3
+	Mem_Ang4[increment] = ReadAng4
+	Mem_Ang5[increment] = ReadAng5
+	Mem_Ang6[increment] = ReadAng6
+
+	Mem_X[increment] = X
+	Mem_Y[increment] = Y
+	Mem_Z[increment] = Z
+	Mem_XRot[increment] = X6_ROT
+	Mem_YRot[increment] = Y6_ROT
+	Mem_ZRot[increment] = Z6_ROT
+
+	TimeIndex = TimeIndex + samplingTime
+	TimeRecord[increment] = TimeIndex
+	increment = increment + 1
+
+	time.sleep(samplingTime)
+'''
+with open('testCSV.csv', 'w') as f:
+	thewriter = csv.writer(f)
+
+	thewriter.writerow(['Time','ANG1','ANG2','ANG3','ANG4','ANG5','ANG6','X','Y','Z','Xrot','Yrot','Zrot'])
+
+	for i in range(0,increment):
+		thewriter.writerow([TimeRecord[i],Mem_Ang1[i],Mem_Ang2[i],Mem_Ang3[i],Mem_Ang4[i],Mem_Ang5[i],Mem_Ang6[i],Mem_X[i],Mem_Y[i],Mem_Z[i],Mem_XRot[i],Mem_YRot[i],Mem_ZRot[i]])
+
+'''		
